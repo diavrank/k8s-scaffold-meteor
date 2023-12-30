@@ -19,7 +19,8 @@ import * as pulumi from "@pulumi/pulumi";
 export interface DemoAppArgs {
     provider: k8s.Provider; // Provider resource for the target Kubernetes cluster.
     imageTag: string; // Tag for the kuard image to deploy.
-    staticAppIP?: pulumi.Input<string>; // Optional static IP to use for the service. (Required for AKS).
+    staticAppIP?: pulumi.Input<string>; // Optional static IP to use for the service. (Required for AKS)
+    pvc: k8s.core.v1.PersistentVolumeClaim;
 }
 
 const environmentVariableNames = [
@@ -49,7 +50,7 @@ export class DemoApp extends pulumi.ComponentResource {
                 opts: pulumi.ComponentResourceOptions = {}) {
         super("examples:kubernetes-ts-multicloud:demo-app", name, args, opts);
 
-        // Create the kuard Deployment.
+        // Create the app Deployment.
         const appLabels = {app: "scaffold"};
         const deployment = new k8s.apps.v1.Deployment(`${name}-scaffold-app`, {
             spec: {
@@ -64,6 +65,12 @@ export class DemoApp extends pulumi.ComponentResource {
                                 image: `docker.io/diavrank/scaffold-meteor-vue:${args.imageTag}`,
                                 ports: [{containerPort: APP_PORT, name: "http"}],
                                 env: environmentVariables,
+                                volumeMounts:[
+                                    {
+                                        mountPath:"/opt/app-files",
+                                        name: 'app-volume'
+                                    }
+                                ],
                                 livenessProbe: {
                                     httpGet: {path: "/api", port: "http"},
                                     initialDelaySeconds: 5,
@@ -80,6 +87,12 @@ export class DemoApp extends pulumi.ComponentResource {
                                 },
                             },
                         ],
+                        volumes: [{
+                            name: "app-volume",                      // This name is referenced in `volumeMounts`.
+                            persistentVolumeClaim: {
+                                claimName: args.pvc.metadata.name,     // The name of the PersistentVolumeClaim to mount.
+                            },
+                        }],
                         // Adding hostAliases to the spec
                         hostAliases: [{
                             ip: DATABASE_IP_ADDRESS,

@@ -19,14 +19,62 @@ import * as random from "@pulumi/random";
 
 export class GkeCluster extends pulumi.ComponentResource {
     public cluster: gcp.container.Cluster;
+    public persistentVolumeClaim: k8s.core.v1.PersistentVolumeClaim;
     public provider: k8s.Provider;
 
     constructor(name: string,
                 opts: pulumi.ComponentResourceOptions = {}) {
         super("examples:kubernetes-ts-multicloud:GkeCluster", name, {}, opts);
 
+        const config = new pulumi.Config();
+
+
+        // Create a GCP disk that will be used by the PersistentVolume
+        const diskSize = config.requireNumber("filesVolumeSize");
+        const diskName = "app-disk";
+
+        const disk = new gcp.compute.Disk(diskName, {
+            size: diskSize,
+            // You can specify other properties like `type` or `labels` as needed
+        });
+
+        const storageClassName = "pd.csi.storage.gke.io"; // This is the recommended storage class
+
+        // Define a PersistentVolume using the recommended GCP CSI storage class
+        const persistentVolume = new k8s.core.v1.PersistentVolume("app-pv", {
+            spec: {
+                capacity: {
+                    storage: `${diskSize}Gi`,
+                },
+                accessModes: ["ReadWriteOnce"],
+                persistentVolumeReclaimPolicy: "Retain",
+                storageClassName: storageClassName,
+                csi: {
+                    driver: storageClassName,
+                    fsType: "ext4",
+                    volumeHandle: disk.id, // Replace <volume-id> with your actual persistent disk volume ID from GCP
+                    // Additional configuration can be added here if needed
+                },
+            },
+        });
+
+        // Create a PersistentVolumeClaim that a Pod can use to claim the PersistentVolume
+        this.persistentVolumeClaim = new k8s.core.v1.PersistentVolumeClaim("app-pvc", {
+            spec: {
+                accessModes: ["ReadWriteOnce"],
+                storageClassName: storageClassName, // This should match the PV's storageClassName
+                resources: {
+                    requests: {
+                        storage: `${diskSize}Gi`,
+                    },
+                },
+                volumeName: persistentVolume.metadata.name
+            },
+        });
+
+
         // Find the latest engine version.
-        const engineVersion = gcp.container.getEngineVersions({}, { async: true }).then(v => v.latestMasterVersion);
+        const engineVersion = gcp.container.getEngineVersions({}, {async: true}).then(v => v.latestMasterVersion);
 
         // Generate a strong password for the Kubernetes cluster.
         const password = new random.RandomPassword("password", {
@@ -74,8 +122,8 @@ export class GkeCluster extends pulumi.ComponentResource {
         // gcloud to be in the picture for cluster authentication (rather than using the client cert/key directly).
         const k8sConfig = pulumi.all([k8sCluster.name, k8sCluster.endpoint, k8sCluster.masterAuth]).apply(
             ([name, endpoint, auth]) => {
-            const context = `${gcp.config.project}_${gcp.config.zone}_${name}`;
-            return `apiVersion: v1
+                const context = `${gcp.config.project}_${gcp.config.zone}_${name}`;
+                return `apiVersion: v1
 clusters:
 - cluster:
     certificate-authority-data: ${auth.clusterCaCertificate}
@@ -99,7 +147,7 @@ users:
         https://cloud.google.com/blog/products/containers-kubernetes/kubectl-auth-changes-in-gke
       provideClusterInfo: true
 `;
-        });
+            });
 
         // Export a Kubernetes provider instance that uses our cluster from above.
         this.provider = new k8s.Provider("gke", {kubeconfig: k8sConfig}, {

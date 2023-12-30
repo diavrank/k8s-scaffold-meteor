@@ -17,12 +17,13 @@ interface Cluster {
     name: string;
     provider: k8s.Provider;
     staticAppIP?: pulumi.Output<string>;
+    pvc: k8s.core.v1.PersistentVolumeClaim;
 }
 const clusters: Cluster[] = [
     // Note: Comment out lines for any cluster you don't want to deploy.
     // {name: "aks", provider: aksCluster.provider, staticAppIP: aksCluster.staticAppIP},
     // {name: "eks", provider: eksCluster.provider},
-    {name: "gke", provider: gkeCluster.provider},
+    {name: "gke", provider: gkeCluster.provider, pvc: gkeCluster.persistentVolumeClaim},
     // {name: "local", provider: local.provider},
 ];
 
@@ -42,6 +43,7 @@ for (const cluster of clusters) {
         provider: cluster.provider,
         imageTag: appImageTag,
         staticAppIP: cluster.staticAppIP,
+        pvc: cluster.pvc,
     });
 
     const instanceUrl: AppUrl = {name: cluster.name, url: instance.appUrl};

@@ -1,3 +1,4 @@
 config:
   gcp:project: meteorvuetify-1559522216052
   gcp:zone: us-central1-a
+  k8s-scaffold:filesVolumeSize: "10"
