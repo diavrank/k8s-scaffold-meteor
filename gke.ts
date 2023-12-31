@@ -31,29 +31,47 @@ export class GkeCluster extends pulumi.ComponentResource {
 
         // Create a GCP disk that will be used by the PersistentVolume
         const diskSize = config.requireNumber("filesVolumeSize");
-        const diskName = "app-disk";
+        const diskName = "appDisk";
 
-        const disk = new gcp.compute.Disk(diskName, {
-            size: diskSize,
-            // You can specify other properties like `type` or `labels` as needed
+        /**
+         * To have a Persistent Volume to be used in multiple nodes, we need to use Filestore service instead of Persistent Disks.
+         *
+         * GCP Persistent Disks do not support the ReadWriteMany access mode. GCP Persistent Disks can only be mounted
+         * by a single node in read-write mode (ReadWriteOnce) or by multiple nodes in read-only mode (ReadOnlyMany)
+         *
+         * If you need a storage option that supports ReadWriteMany, you should use a file storage service like
+         * Google Cloud Filestore, which can be used to create a Persistent Volume with ReadWriteMany access mode
+         * in a Kubernetes cluster.
+         */
+        const fileStoreInstance = new gcp.filestore.Instance("nfs-instance", {
+            tier: "STANDARD", // Other options include "PREMIUM" and "BASIC_HDD".
+            fileShares: {
+                name: diskName,
+                capacityGb: diskSize, // The minimum capacity in GB for filestore is 1024GB and the monthly price is high, so, be careful when use this
+            },
+            networks: [{
+                network: "default", // The name of the GCP network
+                modes: ["MODE_IPV4"],
+            }],
+            location: "us-central1-a", // The GCP zone where the instance is created. For no costs of data transfer, should be the same as the cluster region/zone
         });
 
-        const storageClassName = "pd.csi.storage.gke.io"; // This is the recommended storage class
+        // Assuming a standard StorageClass named "standard" is available in your cluster
+        const storageClassName = "standard";
 
         // Define a PersistentVolume using the recommended GCP CSI storage class
         const persistentVolume = new k8s.core.v1.PersistentVolume("app-pv", {
             spec: {
                 capacity: {
-                    storage: `${diskSize}Gi`,
+                    storage: `${diskSize}Gi`, // This should reflect the capacity of your Filestore volume
                 },
-                accessModes: ["ReadWriteOnce"],
+                accessModes: ["ReadWriteMany"],
                 persistentVolumeReclaimPolicy: "Retain",
+                // Ensure the storageClassName is set and matches what is expected by the PVC
                 storageClassName: storageClassName,
-                csi: {
-                    driver: storageClassName,
-                    fsType: "ext4",
-                    volumeHandle: disk.id, // Replace <volume-id> with your actual persistent disk volume ID from GCP
-                    // Additional configuration can be added here if needed
+                nfs: {
+                    path: `/${diskName}`,
+                    server: fileStoreInstance.networks.apply(networks => networks[0].ipAddresses[0]),
                 },
             },
         });
@@ -61,8 +79,9 @@ export class GkeCluster extends pulumi.ComponentResource {
         // Create a PersistentVolumeClaim that a Pod can use to claim the PersistentVolume
         this.persistentVolumeClaim = new k8s.core.v1.PersistentVolumeClaim("app-pvc", {
             spec: {
-                accessModes: ["ReadWriteOnce"],
-                storageClassName: storageClassName, // This should match the PV's storageClassName
+                // Ensure the storageClassName matches the PV's storage class
+                storageClassName: storageClassName,
+                accessModes: ["ReadWriteMany"],
                 resources: {
                     requests: {
                         storage: `${diskSize}Gi`,
@@ -109,6 +128,10 @@ export class GkeCluster extends pulumi.ComponentResource {
                 ],
             },
             version: engineVersion,
+            autoscaling: {
+                minNodeCount: 2,
+                maxNodeCount: 3, // Adjust maxNodeCount as needed
+            },
             management: {
                 autoRepair: true,
             },

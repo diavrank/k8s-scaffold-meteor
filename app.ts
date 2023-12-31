@@ -65,12 +65,27 @@ export class DemoApp extends pulumi.ComponentResource {
                                 image: `docker.io/diavrank/scaffold-meteor-vue:${args.imageTag}`,
                                 ports: [{containerPort: APP_PORT, name: "http"}],
                                 env: environmentVariables,
-                                volumeMounts:[
+                                volumeMounts: [
                                     {
-                                        mountPath:"/opt/app-files",
+                                        mountPath: "/opt/app-files",
                                         name: 'app-volume'
                                     }
                                 ],
+                                resources: {
+                                    requests: {
+                                        cpu: "250m"
+                                    },
+                                    limits: {
+                                        /**
+                                         * For 1vCPU === 1000m , so, this deployment can have at most 2 replicas per CPU.
+                                         *
+                                         * Example: If we have 2 nodes with 1vCPU each one, we can have at most:
+                                         *
+                                         *  2 vCPUs / 400 millicores =~ 5 replicas = 4 replicas since CPU is also used by the operating system of each pod
+                                         */
+                                        cpu: "400m"
+                                    }
+                                },
                                 livenessProbe: {
                                     httpGet: {path: "/api", port: "http"},
                                     initialDelaySeconds: 5,
@@ -106,6 +121,35 @@ export class DemoApp extends pulumi.ComponentResource {
                 },
             },
         }, {provider: args.provider, parent: this});
+
+        const hpa = new k8s.autoscaling.v1.HorizontalPodAutoscaler("scaffold-app-hpa", {
+            metadata: {
+                name: "scaffold-app-hpa",
+            },
+            spec: {
+                scaleTargetRef: {
+                    apiVersion: "apps/v1",
+                    kind: "Deployment",
+                    name: deployment.metadata.name,
+                },
+                minReplicas: 2, // this will override the replicas number specified in the deployment
+                maxReplicas: 4,
+                /**
+                 * CPU utilization percentage per pod's cpu
+                 *
+                 * Example:
+                 * If a pod has a limit of 400m of CPU, HPA will create another pod when this exceeds the 90% of 400m of CPU.
+                 *
+                 * 400m -> 100%
+                 * X -> 90%
+                 * Thus:
+                 * (90 * 400) / 100 = 360m --> If the pod exceeds the 360m of CPU, HPA will create another pod if
+                 * the maximum number of replicas has not been reached, otherwise, the pod will use the max limit of CPU
+                 * that was specified in the deployment.
+                 */
+                targetCPUUtilizationPercentage: 90,
+            },
+        });
 
         // Create a LoadBalancer Service to expose the scaffold Deployment.
         const service = new k8s.core.v1.Service(`${name}-scaffold-app`, {
